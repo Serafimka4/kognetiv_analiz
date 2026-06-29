@@ -25,40 +25,109 @@ TOPIC_LABELS = {
 }
 
 
+def _read_sql(conn, query):
+    """Безопасное чтение: если таблицы ещё нет, возвращает пустой DataFrame."""
+    try:
+        return pd.read_sql(query, conn, parse_dates=["date"])
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data
 def load_data():
+    if not config.DB_PATH.exists():
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     conn = sqlite3.connect(config.DB_PATH)
-    idx = pd.read_sql("SELECT date, close FROM index_quotes ORDER BY date",
-                      conn, parse_dates=["date"])
-    sent = pd.read_sql(
+    idx = _read_sql(conn, "SELECT date, close FROM index_quotes ORDER BY date")
+    sent = _read_sql(conn,
         """SELECT date, AVG(score) sent, COUNT(*) n_news,
            AVG(CASE WHEN label='NEGATIVE' THEN 1.0 ELSE 0 END) neg_share
-           FROM news_sentiment GROUP BY date""",
-        conn, parse_dates=["date"])
-    topics = pd.read_sql(
-        "SELECT date, topic_id FROM news_topic", conn, parse_dates=["date"])
+           FROM news_sentiment GROUP BY date""")
+    topics = _read_sql(conn, "SELECT date, topic_id FROM news_topic")
     conn.close()
-    sent["sent_roll7"] = sent["sent"].rolling(7).mean()
+    if not sent.empty:
+        sent["sent_roll7"] = sent["sent"].rolling(7).mean()
     return idx, sent, topics
 
 
 @st.cache_data
 def load_results():
-    res = pd.read_csv(config.DATA_DIR / "model_results.csv")
-    imp = pd.read_csv(config.DATA_DIR / "shap_importance.csv")
+    res_path = config.DATA_DIR / "model_results.csv"
+    imp_path = config.DATA_DIR / "shap_importance.csv"
+    res = pd.read_csv(res_path) if res_path.exists() else None
+    imp = pd.read_csv(imp_path) if imp_path.exists() else None
     return res, imp
 
 
 @st.cache_data
 def load_live():
+    if not config.DB_PATH.exists():
+        return pd.DataFrame(), pd.DataFrame()
     conn = sqlite3.connect(config.DB_PATH)
-    lidx = pd.read_sql("SELECT date, close FROM live_index ORDER BY date",
-                       conn, parse_dates=["date"])
-    lnews = pd.read_sql(
-        "SELECT date, source, title, label, score, topic_id FROM live_news",
-        conn, parse_dates=["date"])
+    lidx = _read_sql(conn, "SELECT date, close FROM live_index ORDER BY date")
+    lnews = _read_sql(conn,
+        "SELECT date, source, title, label, score, topic_id FROM live_news")
     conn.close()
     return lidx, lnews
+
+
+def render_live(lidx, lnews):
+    """Отрисовка раздела актуальных данных (используется и как вкладка,
+    и как облегчённый режим при отсутствии исторических данных)."""
+    st.subheader("Текущее настроение рынка (свежие новости + котировки)")
+    if lnews.empty:
+        st.warning("Live-данные ещё не собраны. Запустите: "
+                   "`python -m src.live.monitor`")
+        return
+    last_day = lnews["date"].max()
+    today = lnews[lnews["date"] == last_day]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Обновлено", last_day.strftime("%Y-%m-%d"))
+    c2.metric("Новостей всего", len(lnews))
+    mood = today["score"].mean() if len(today) else 0
+    c3.metric("Настроение (посл. день)", f"{mood:+.3f}",
+              delta="негатив" if mood < -0.05 else
+              ("позитив" if mood > 0.05 else "нейтрально"))
+    if not lidx.empty:
+        c4.metric("IMOEX", f"{lidx['close'].iloc[-1]:.0f}")
+
+    daily = lnews.groupby("date")["score"].mean().reset_index()
+    fig = go.Figure()
+    if not lidx.empty:
+        fig.add_trace(go.Scatter(x=lidx.date, y=lidx.close, name="IMOEX",
+                                 line=dict(color="#1f77b4")))
+    fig.add_trace(go.Scatter(x=daily.date, y=daily.score,
+                             name="Настроение (день)", yaxis="y2",
+                             line=dict(color="#d62728")))
+    fig.update_layout(
+        height=420, title="IMOEX и настроение свежих новостей",
+        yaxis=dict(title="IMOEX"),
+        yaxis2=dict(title="Настроение", overlaying="y", side="right"),
+        legend=dict(orientation="h"))
+    st.plotly_chart(fig, use_container_width=True)
+
+    colA, colB = st.columns(2)
+    with colA:
+        by_src = (lnews.groupby("source")["score"].mean()
+                  .sort_values().reset_index())
+        fig2 = px.bar(by_src, x="score", y="source", orientation="h",
+                      title="Среднее настроение по источникам",
+                      color="score", color_continuous_scale="RdYlGn")
+        st.plotly_chart(fig2, use_container_width=True)
+    with colB:
+        lnews2 = lnews.copy()
+        lnews2["Тема"] = lnews2["topic_id"].map(TOPIC_LABELS).fillna("—")
+        by_t = (lnews2.groupby("Тема")["score"].mean()
+                .sort_values().reset_index())
+        fig3 = px.bar(by_t, x="score", y="Тема", orientation="h",
+                      title="Среднее настроение по темам",
+                      color="score", color_continuous_scale="RdYlGn")
+        st.plotly_chart(fig3, use_container_width=True)
+
+    st.subheader("Свежие заголовки")
+    show = (today if len(today) else lnews).sort_values("date", ascending=False)
+    show = show[["date", "source", "label", "score", "title"]].head(30)
+    st.dataframe(show, use_container_width=True, hide_index=True)
 
 
 def main():
@@ -69,6 +138,41 @@ def main():
 
     idx, sent, topics = load_data()
     res, imp = load_results()
+    lidx0, lnews0 = load_live()
+
+    # данных ещё нет — показываем инструкцию вместо падения
+    if idx.empty and lnews0.empty:
+        st.warning("Данные ещё не сформированы — каталог `data/` пуст.")
+        st.markdown("""
+Дашборд отображает результаты работы конвейера, которых пока нет в этой среде
+(каталог `data/` не входит в репозиторий). Чтобы наполнить систему данными:
+
+**Вариант 1 — прогнать конвейер на сервере** (нужен архив новостей в `data/raw/`):
+```bash
+mkdir -p data/raw
+curl -L -o data/raw/lenta-ru-news.csv.bz2 \\
+  https://github.com/yutkin/Lenta.Ru-News-Dataset/releases/download/v1.1/lenta-ru-news.csv.bz2
+python run_pipeline.py            # или: docker compose run --rm pipeline
+```
+
+**Вариант 2 — быстро показать актуальные данные** (свежие новости + котировки):
+```bash
+python -m src.live.monitor        # или: docker compose run --rm live
+```
+После этого обновите страницу. Вкладка «🔴 Сейчас» заработает уже после варианта 2.
+
+**Вариант 3 — перенести готовые данные** с рабочей машины: скопируйте локальный
+каталог `data/` (файл `market.db`, `model_results.csv`, `shap_importance.csv`,
+папки `figures/`, `models/`) в `data/` на сервере.
+        """)
+        st.stop()
+
+    # если истории нет, но есть live — работаем в облегчённом режиме
+    if idx.empty:
+        st.info("Исторические данные отсутствуют — доступен только режим «Сейчас». "
+                "Для полного анализа прогоните `python run_pipeline.py`.")
+        render_live(lidx0, lnews0)
+        return
 
     # фильтр по датам
     dmin, dmax = idx["date"].min().date(), idx["date"].max().date()
@@ -135,25 +239,30 @@ def main():
 
     # --- Прогноз и факторы ---
     with tab4:
-        st.subheader("Сравнение моделей прогноза тренда (walk-forward)")
-        st.dataframe(res.round(4), use_container_width=True, hide_index=True)
-        st.caption("Гипотеза: «цена+текст» точнее, чем «цена». Подтверждается слабо "
-                   "(Δacc≈+2.7 п.п.), абсолютная точность ≈ случайной (AUC≈0.51).")
+        if res is None or imp is None:
+            st.warning("Результаты модели ещё не сформированы. Запустите этапы 5–6: "
+                       "`python -m src.models.train` и `python -m src.cognitive.explain` "
+                       "(или `python run_pipeline.py`).")
+        else:
+            st.subheader("Сравнение моделей прогноза тренда (walk-forward)")
+            st.dataframe(res.round(4), use_container_width=True, hide_index=True)
+            st.caption("Гипотеза: «цена+текст» точнее, чем «цена». Подтверждается слабо "
+                       "(Δacc≈+2.7 п.п.), абсолютная точность ≈ случайной (AUC≈0.51).")
 
-        st.subheader("Влияние факторов на прогноз (SHAP)")
-        top = imp.head(15).iloc[::-1]
-        fig = px.bar(top, x="importance", y="name_ru", color="group",
-                     orientation="h",
-                     color_discrete_map={"текст": "#d62728", "цена": "#1f77b4"},
-                     labels={"importance": "Среднее |SHAP|", "name_ru": "",
-                             "group": "Группа"})
-        fig.update_layout(height=520)
-        st.plotly_chart(fig, use_container_width=True)
-        share = imp.groupby("group")["importance"].sum()
-        share = (share / share.sum() * 100).round(1)
-        st.metric("Вклад текстовых факторов",
-                  f"{share.get('текст', 0)}%",
-                  help="Доля суммарного |SHAP| у текстовых признаков")
+            st.subheader("Влияние факторов на прогноз (SHAP)")
+            top = imp.head(15).iloc[::-1]
+            fig = px.bar(top, x="importance", y="name_ru", color="group",
+                         orientation="h",
+                         color_discrete_map={"текст": "#d62728", "цена": "#1f77b4"},
+                         labels={"importance": "Среднее |SHAP|", "name_ru": "",
+                                 "group": "Группа"})
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
+            share = imp.groupby("group")["importance"].sum()
+            share = (share / share.sum() * 100).round(1)
+            st.metric("Вклад текстовых факторов",
+                      f"{share.get('текст', 0)}%",
+                      help="Доля суммарного |SHAP| у текстовых признаков")
 
     # --- Выводы ---
     with tab5:
@@ -183,63 +292,7 @@ def main():
 
     # --- Live: текущее состояние ---
     with tab6:
-        st.subheader("Текущее настроение рынка (свежие новости + котировки)")
-        lidx, lnews = load_live()
-        if lnews.empty:
-            st.warning("Live-данные ещё не собраны. Запустите: "
-                       "`python -m src.live.monitor`")
-        else:
-            last_day = lnews["date"].max()
-            today = lnews[lnews["date"] == last_day]
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Обновлено", last_day.strftime("%Y-%m-%d"))
-            c2.metric("Новостей всего", len(lnews))
-            mood = today["score"].mean() if len(today) else 0
-            c3.metric("Настроение (посл. день)", f"{mood:+.3f}",
-                      delta="негатив" if mood < -0.05 else
-                      ("позитив" if mood > 0.05 else "нейтрально"))
-            if not lidx.empty:
-                c4.metric("IMOEX", f"{lidx['close'].iloc[-1]:.0f}")
-
-            # котировки + дневное настроение
-            daily = lnews.groupby("date")["score"].mean().reset_index()
-            fig = go.Figure()
-            if not lidx.empty:
-                fig.add_trace(go.Scatter(x=lidx.date, y=lidx.close, name="IMOEX",
-                                         line=dict(color="#1f77b4")))
-            fig.add_trace(go.Scatter(x=daily.date, y=daily.score,
-                                     name="Настроение (день)", yaxis="y2",
-                                     line=dict(color="#d62728")))
-            fig.update_layout(
-                height=420, title="IMOEX и настроение свежих новостей",
-                yaxis=dict(title="IMOEX"),
-                yaxis2=dict(title="Настроение", overlaying="y", side="right"),
-                legend=dict(orientation="h"))
-            st.plotly_chart(fig, use_container_width=True)
-
-            colA, colB = st.columns(2)
-            with colA:
-                by_src = (lnews.groupby("source")["score"].mean()
-                          .sort_values().reset_index())
-                fig2 = px.bar(by_src, x="score", y="source", orientation="h",
-                              title="Среднее настроение по источникам",
-                              color="score", color_continuous_scale="RdYlGn")
-                st.plotly_chart(fig2, use_container_width=True)
-            with colB:
-                lnews2 = lnews.copy()
-                lnews2["Тема"] = lnews2["topic_id"].map(TOPIC_LABELS).fillna("—")
-                by_t = (lnews2.groupby("Тема")["score"].mean()
-                        .sort_values().reset_index())
-                fig3 = px.bar(by_t, x="score", y="Тема", orientation="h",
-                              title="Среднее настроение по темам",
-                              color="score", color_continuous_scale="RdYlGn")
-                st.plotly_chart(fig3, use_container_width=True)
-
-            st.subheader("Свежие заголовки")
-            show = (today if len(today) else lnews).sort_values("date",
-                                                                ascending=False)
-            show = show[["date", "source", "label", "score", "title"]].head(30)
-            st.dataframe(show, use_container_width=True, hide_index=True)
+        render_live(lidx0, lnews0)
 
 
 if __name__ == "__main__":
