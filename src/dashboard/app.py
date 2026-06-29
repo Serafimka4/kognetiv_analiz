@@ -104,7 +104,7 @@ def render_live(lidx, lnews):
         yaxis=dict(title="IMOEX"),
         yaxis2=dict(title="Настроение", overlaying="y", side="right"),
         legend=dict(orientation="h"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     colA, colB = st.columns(2)
     with colA:
@@ -113,7 +113,7 @@ def render_live(lidx, lnews):
         fig2 = px.bar(by_src, x="score", y="source", orientation="h",
                       title="Среднее настроение по источникам",
                       color="score", color_continuous_scale="RdYlGn")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
     with colB:
         lnews2 = lnews.copy()
         lnews2["Тема"] = lnews2["topic_id"].map(TOPIC_LABELS).fillna("—")
@@ -122,12 +122,12 @@ def render_live(lidx, lnews):
         fig3 = px.bar(by_t, x="score", y="Тема", orientation="h",
                       title="Среднее настроение по темам",
                       color="score", color_continuous_scale="RdYlGn")
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
     st.subheader("Свежие заголовки")
     show = (today if len(today) else lnews).sort_values("date", ascending=False)
     show = show[["date", "source", "label", "score", "title"]].head(30)
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.dataframe(show, width="stretch", hide_index=True)
 
 
 def main():
@@ -204,7 +204,7 @@ python -m src.live.monitor        # или: docker compose run --rm live
             yaxis=dict(title="IMOEX"),
             yaxis2=dict(title="Настроение", overlaying="y", side="right"),
             legend=dict(orientation="h"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.info("Индекс настроений — средний score (pos−neg) новостей по дням, "
                 "сглаженный за 7 дней.")
 
@@ -214,12 +214,12 @@ python -m src.live.monitor        # или: docker compose run --rm live
                       title="Доля негативных новостей по дням",
                       labels={"neg_share": "Доля негатива"})
         fig.update_traces(line_color="#d62728")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         fig2 = px.bar(sent, x="date", y="n_news",
                       title="Объём новостей по дням",
                       labels={"n_news": "Кол-во новостей"})
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     # --- Темы ---
     with tab3:
@@ -228,14 +228,14 @@ python -m src.live.monitor        # или: docker compose run --rm live
         topics["label"] = topics["topic_id"].map(TOPIC_LABELS)
         share = (topics.groupby("label").size()
                  .sort_values(ascending=False).reset_index(name="Новостей"))
-        st.dataframe(share, use_container_width=True, hide_index=True)
+        st.dataframe(share, width="stretch", hide_index=True)
 
         topics["month"] = topics["date"].dt.to_period("M").dt.to_timestamp()
         ts = (topics.groupby(["month", "label"]).size()
               .reset_index(name="n"))
         fig = px.area(ts, x="month", y="n", color="label",
                       title="Динамика тем во времени (новостей в месяц)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     # --- Прогноз и факторы ---
     with tab4:
@@ -245,7 +245,7 @@ python -m src.live.monitor        # или: docker compose run --rm live
                        "(или `python run_pipeline.py`).")
         else:
             st.subheader("Сравнение моделей прогноза тренда (walk-forward)")
-            st.dataframe(res.round(4), use_container_width=True, hide_index=True)
+            st.dataframe(res.round(4), width="stretch", hide_index=True)
             st.caption("Гипотеза: «цена+текст» точнее, чем «цена». Подтверждается слабо "
                        "(Δacc≈+2.7 п.п.), абсолютная точность ≈ случайной (AUC≈0.51).")
 
@@ -257,7 +257,7 @@ python -m src.live.monitor        # или: docker compose run --rm live
                          labels={"importance": "Среднее |SHAP|", "name_ru": "",
                                  "group": "Группа"})
             fig.update_layout(height=520)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             share = imp.groupby("group")["importance"].sum()
             share = (share / share.sum() * 100).round(1)
             st.metric("Вклад текстовых факторов",
