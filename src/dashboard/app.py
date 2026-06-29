@@ -2,9 +2,13 @@
 
 Запуск:  streamlit run src/dashboard/app.py
 """
+import faulthandler
 import sqlite3
 import sys
 from pathlib import Path
+
+# при нативном сбое (SIGSEGV) выведет точную строку Python в stderr
+faulthandler.enable()
 
 # чтобы работали импорты config/src при запуске через streamlit
 ROOT = Path(__file__).resolve().parents[2]
