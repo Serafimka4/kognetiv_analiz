@@ -1,0 +1,31 @@
+# Удобный запуск через docker compose.
+#
+#   docker compose up dashboard      — поднять дашборд на http://localhost:8501
+#   docker compose run --rm pipeline — прогнать конвейер (этапы 1–6)
+#   docker compose run --rm live     — освежить live-данные (RSS + котировки)
+#
+# Каталог ./data монтируется как том: БД, архив Lenta, модели и кэш моделей
+# сохраняются между запусками на хосте.
+
+services:
+  dashboard:
+    build: .
+    image: kog-anal
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+
+  pipeline:
+    build: .
+    image: kog-anal
+    volumes:
+      - ./data:/app/data
+    command: ["python", "run_pipeline.py"]
+
+  live:
+    build: .
+    image: kog-anal
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "src.live.monitor"]

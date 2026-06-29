@@ -1,0 +1,28 @@
+# --- Сбор данных ---
+apimoex>=1.4.0
+requests>=2.31
+feedparser>=6.0
+beautifulsoup4>=4.12
+
+# --- Обработка данных ---
+pandas>=2.2
+numpy>=1.26
+
+# --- Предобработка русского текста (Этап 2) ---
+razdel>=0.5
+pymorphy3>=2.0
+natasha>=1.6
+
+# --- NLP / ML (Этапы 3-6) ---
+transformers>=4.40        # RuBERT для тональности (blanchefort)
+torch>=2.2
+gensim>=4.3               # LDA-темы
+scikit-learn>=1.4
+xgboost>=2.0              # на macOS требует: brew install libomp
+ta>=0.11
+shap>=0.45
+
+# --- Визуализация (Этап 7) ---
+streamlit>=1.33
+plotly>=5.20
+matplotlib>=3.8
